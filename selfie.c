@@ -106,6 +106,9 @@ uint64_t write(uint64_t fd, uint64_t* buffer, uint64_t bytes_to_write);
 
 // selfie bootstraps char to uint64_t!
 uint64_t open(char* filename, uint64_t flags, uint64_t mode);
+int fork();
+uint64_t wait(uint64_t *status);
+uint64_t flock(uint64_t fd, uint64_t operation); 
 
 // selfie bootstraps void* and unsigned long to uint64_t* and uint64_t, respectively!
 void* malloc(unsigned long);
@@ -210,6 +213,8 @@ uint64_t CHAR_EXCLAMATION  = '!';
 uint64_t CHAR_LT           = '<';
 uint64_t CHAR_GT           = '>';
 uint64_t CHAR_BACKSLASH    =  92; // ASCII code 92 = backslash
+uint64_t LOCK_EX = 2;           /* Exclusive lock.  */
+uint64_t LOCK_UN = 8;           /* Unlock.  */
 
 uint64_t CPUBITWIDTH = 64;
 
@@ -847,6 +852,7 @@ uint64_t rd     = 0;
 uint64_t imm    = 0;
 uint64_t funct3 = 0;
 uint64_t funct7 = 0;
+uint64_t lock = 0;
 
 // -----------------------------------------------------------------
 // ---------------------------- BINARY -----------------------------
@@ -978,6 +984,15 @@ void     implement_openat(uint64_t* context);
 void emit_malloc();
 void implement_brk(uint64_t* context);
 
+void emit_fork();
+void implement_fork(uint64_t *context);
+
+void emit_wait();
+void implement_wait(uint64_t *context);
+
+void emit_lock();
+void implement_lock(uint64_t *context);
+
 // ------------------------ GLOBAL CONSTANTS -----------------------
 
 uint64_t debug_read  = 0;
@@ -990,6 +1005,9 @@ uint64_t SYSCALL_READ   = 63;
 uint64_t SYSCALL_WRITE  = 64;
 uint64_t SYSCALL_OPENAT = 56;
 uint64_t SYSCALL_BRK    = 214;
+uint64_t SYSCALL_FORK 	= 444;
+uint64_t SYSCALL_WAIT 	= 333;
+uint64_t SYSCALL_LOCK 	= 555;
 
 /* DIRFD_AT_FDCWD corresponds to AT_FDCWD in fcntl.h and
    is passed as first argument of the openat system call
@@ -1511,6 +1529,7 @@ uint64_t* current_context = (uint64_t*) 0; // context currently running
 
 uint64_t* used_contexts = (uint64_t*) 0; // doubly-linked list of used contexts
 uint64_t* free_contexts = (uint64_t*) 0; // singly-linked list of free contexts
+uint64_t *waiting_context = (uint64_t *)0; // doubly-linked list of waiting processes
 
 // ------------------------- INITIALIZATION ------------------------
 
@@ -4872,6 +4891,10 @@ void selfie_compile() {
   emit_open();
   emit_malloc();
   emit_switch();
+  emit_fork();
+  emit_wait();
+  emit_lock();
+
 
   // implicitly declare main procedure in global symbol table
   // copy "main" string into zeroed double word to obtain unique hash
@@ -6137,6 +6160,124 @@ void implement_write(uint64_t* context) {
     print_register_value(REG_A0);
     println();
   }
+}
+
+void emit_lock(){
+  create_symbol_table_entry(LIBRARY_TABLE, "flock", 0, PROCEDURE, UINT64_T, 0, binary_length);
+  emit_ld(REG_A1, REG_SP, 0); // OPERATIONS
+  emit_addi(REG_SP, REG_SP, REGISTERSIZE);
+  emit_ld(REG_A0, REG_SP, 0); // fd
+  emit_addi(REG_SP, REG_SP, REGISTERSIZE);
+  emit_addi(REG_A7, REG_ZR, SYSCALL_LOCK);
+  emit_ecall();
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_lock(uint64_t *context){
+  // parameters
+  uint64_t fd;
+  uint64_t operation;
+
+  //locl variables
+
+  uint64_t *tail;
+  uint64_t *wcontext;
+
+  fd = *(get_regs(context) + REG_A0);
+  operation = *(get_regs(context) + REG_A1);
+
+  if (operation == 2)
+  {
+    printf1("-----------------%s\n", "--");
+    if (lock == 0)
+    {
+      if (waiting_context == (uint64_t *)0)
+      {
+        current_context = context;
+        lock = 1;
+        flock(fd, LOCK_EX);
+      }
+      else
+      {
+        wcontext = waiting_context;
+        while (wcontext != (uint64_t *)0)
+        {
+          tail = wcontext;
+          wcontext = get_next_context(wcontext);
+          if (wcontext != (uint64_t *)0)
+          {
+            current_context = tail;
+            lock = 1;
+            flock(fd, LOCK_EX);
+            delete_context(tail, waiting_context);
+          }
+        }
+      }
+    }
+    else
+    {
+      set_next_context(context, waiting_context);
+      set_prev_context(waiting_context, context);
+    }
+    set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
+  }
+  else if (operation == 8)
+  {
+    lock = 0;
+    flock(fd, LOCK_UN);
+    set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
+  }
+  else
+  {
+    printf1("-----------------%s\n", " wrong value !!");
+  }
+}
+
+void emit_fork(){
+  // add fork entry to symbol table
+  create_symbol_table_entry(LIBRARY_TABLE, "fork", 0, PROCEDURE, UINT64_T, 0, binary_length);
+  // load the fork syscall number
+  emit_addi(REG_A7, REG_ZR, SYSCALL_FORK);
+  // Invoke syscall
+  emit_ecall();
+  // jump back to caller, return value is in REG_A0
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_fork(uint64_t *context){
+  // save the returned value in register A0
+  *(get_regs(context) + REG_A0) = fork();
+  // set the program counter to next instruction
+  set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
+}
+
+
+void emit_wait(){
+  // add fork entry to symbol table
+  create_symbol_table_entry(LIBRARY_TABLE, "wait", 0, PROCEDURE, UINT64_T, 0, binary_length);
+  // add *status argument in the register A0
+  emit_ld(REG_A1, REG_SP, 0);
+  emit_addi(REG_SP, REG_SP, REGISTERSIZE);
+  // load the fork syscall number
+  emit_addi(REG_A7, REG_ZR, SYSCALL_WAIT);
+  // Invoke syscall
+  emit_ecall();
+  // jump back to caller, return value is in REG_A0
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_wait(uint64_t *context){
+  // save the returned value in register A0
+  // uint64_t x = 10;
+  // *(get_regs(context) + REG_A0) = wait(&x);
+  // set the program counter to next instruction
+  uint64_t* status;
+  status = malloc(8);
+  
+  *(get_regs(context) + REG_A0) = wait(status);
+  *(get_regs(context) + REG_A1) = *status;
+
+  set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
 }
 
 void emit_open() {
@@ -8696,6 +8837,15 @@ uint64_t handle_system_call(uint64_t* context) {
     implement_write(context);
   else if (a7 == SYSCALL_OPENAT)
     implement_openat(context);
+  else if (a7 == SYSCALL_FORK)
+  {
+    implement_fork(context);
+    implement_wait(context);
+  }
+  else if (a7 == SYSCALL_WAIT)
+    implement_wait(context);
+  else if (a7 == SYSCALL_LOCK)
+    implement_lock(context);
   else if (a7 == SYSCALL_EXIT) {
     implement_exit(context);
 
