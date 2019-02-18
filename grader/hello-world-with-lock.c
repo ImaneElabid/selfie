@@ -3,10 +3,12 @@ uint64_t* foo;
 
 // main procedure for printing "Hello World!    " on the console
 uint64_t* main() {
-  // create 2^3 processes
+  // create 2^4 processes
   fork();
   fork();
   fork();
+  fork();
+
 
   // point to the "Hello World!    " string
   foo = "Hello World!    ";
@@ -15,7 +17,7 @@ uint64_t* main() {
   // that is, here as "Hello Wo", and "rld!    " which allows us to
   // print them conveniently in chunks of 8 characters at a time
 
-  lock();
+  flock(1,2); //LOCK_EX        2         /* Exclusive lock.  */
 
   // as long as there are characters print them
   while (*foo != 0) {
@@ -28,5 +30,5 @@ uint64_t* main() {
     foo = foo + 1;
   }
 
-  unlock();
+  flock(1,8); //LOCK_UN        8        /* Unlock.  */
 }
